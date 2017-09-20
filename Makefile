@@ -1,2 +1,2 @@
 micro: micro.c
-	$(CC) micro.c -o micro -Wall -Wextra -pedantic -std=c99
+	$(CC) micro.c -o micro -Wall -pedantic -std=c99
