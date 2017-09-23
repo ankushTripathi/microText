@@ -5,6 +5,7 @@
     #include<unistd.h>
     #include<errno.h>
     #include <sys/ioctl.h>
+    #include<sys/types.h>
     #include<termios.h>
     #include<ctype.h>
 
@@ -26,15 +27,23 @@
         PAGE_UP,
         PAGE_DOWN,
         HOME_KEY,
-        END_KEY
+        END_KEY,
+        DEL
     };
+
+    typedef struct erow {
+        int size;
+        char *chars;
+    } erow;
 
 /*  ***********    Declarations    *********     */
     struct config{
         int x;
         int y;
-        int rows;
-        int cols;
+        int screenrows;
+        int screencols;
+        int num_rows;
+        erow row;
         struct termios init_termios;
     };
     struct config _micro;
@@ -47,16 +56,20 @@
     int ReadKeyPress();
     int getWindowSize(int*,int*);
     void initMicro();
-    void drawBoundary(struct buff*);
+    void drawRows(struct buff*);
     void bAppend(struct buff*, const char*, int);
     void bFree(struct buff*);
     void _microCursor(int);
+    void microOpen(char *filename);
 
 
 /*  ***********    Main    *********     */
-    int main(){
+    int main(int argc,char *argv[]){
         enableRawMode();     //enter raw mode
         initMicro();
+        if(argc >= 2){
+            microOpen(argv[1]);
+        }
         while(1){
             _microRefreshScreen();
             _microKeyProcessor();
@@ -70,7 +83,8 @@
     void initMicro(){
         _micro.x = 0;
         _micro.y = 0;
-        if(getWindowSize(&_micro.rows,&_micro.cols)==-1)
+        _micro.num_rows = 0;
+        if(getWindowSize(&_micro.screenrows,&_micro.screencols)==-1)
             die("getWindowSize, initMicro");
     }
 
@@ -113,6 +127,7 @@
                   if (seq[2] == '~') {
                     switch (seq[1]) {
                         case '1': return HOME_KEY;
+                        case '3' : return DEL;
                         case '4': return END_KEY;
                         case '5': return PAGE_UP;
                         case '6': return PAGE_DOWN;
@@ -189,7 +204,7 @@
             }
                         break;
             case ARROW_DOWN : 
-            if(_micro.y != _micro.rows -1){
+            if(_micro.y != _micro.screenrows -1){
             _micro.y++;
             }
                         break;
@@ -199,7 +214,7 @@
             } 
                         break;
             case ARROW_RIGHT : 
-            if(_micro.x != _micro.cols -1){
+            if(_micro.x != _micro.screencols -1){
                 _micro.x++;
             }
                         break;
@@ -217,7 +232,7 @@
             case PAGE_UP:
             case PAGE_DOWN:
               {
-                int times = _micro.rows;
+                int times = _micro.screenrows;
                 while (times--)
                   _microCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
               }
@@ -226,8 +241,8 @@
                 _micro.x = 0;
                 break;
             case END_KEY:
-              _micro.x = _micro.cols - 1;
-                break;
+              _micro.x = _micro.screencols - 1;
+                break;  
           case ARROW_UP:
           case ARROW_DOWN:
           case ARROW_LEFT:
@@ -256,7 +271,7 @@
         bAppend(&a, "\x1b[?25l", 6);
         bAppend(&a, "\x1b[H", 3); 
 
-        drawBoundary(&a);
+        drawRows(&a);
         
         char buf[32];
         snprintf(buf, sizeof(buf), "\x1b[%d;%dH", _micro.y + 1, _micro.x + 1);
@@ -266,26 +281,56 @@
         bFree(&a);
     }
     
-    void drawBoundary(struct buff *a){
-        for(int y=0;y<_micro.rows;y++){
-            if (y == _micro.rows / 3) {
-                char welcome[80];
-                int welcomelen = snprintf(welcome, sizeof(welcome),
-                  "Micro editor -- version %s", MICRO_VERSION);
-                if (welcomelen > _micro.cols) welcomelen = _micro.cols;
-                int padding = (_micro.cols - welcomelen) / 2;
-                if (padding) {
-                  bAppend(a, "#", 1);
-                  padding--;
-                }
-                while (padding--) bAppend(a, " ", 1);
-                bAppend(a, welcome, welcomelen);
-              } else {
-                bAppend(a, "#", 1);
-              }
+    void drawRows(struct buff *a){
+        for(int y=0;y<_micro.screenrows;y++){
+            if(y >= _micro.num_rows){
+                if (y == _micro.screenrows / 3) {
+                    char welcome[80];
+                    int welcomelen = snprintf(welcome, sizeof(welcome),
+                      "Micro editor -- version %s", MICRO_VERSION);
+                    if (welcomelen > _micro.screencols) welcomelen = _micro.screencols;
+                    int padding = (_micro.screencols - welcomelen) / 2;
+                    if (padding) {
+                      bAppend(a, "#", 1);
+                      padding--;
+                    }
+                    while (padding--) bAppend(a, " ", 1);
+                    bAppend(a, welcome, welcomelen);
+                  } else {
+                    bAppend(a, "#", 1);
+                  }
+            }else{
+                int len = _micro.row.size;
+                if(len > _micro.screencols) len = _micro.screencols;
+                bAppend(a,_micro.row.chars,len);
+            }
             bAppend(a, "\x1b[K", 3);
-            if (y < _micro.rows - 1) {
+            if (y < _micro.screenrows - 1) {
               bAppend(a, "\r\n", 2);
             }
         }
+    }
+
+/*  ***********    File I/O Functions    *********     */   
+    void microOpen(char *filename){
+        FILE *fp = fopen(filename,"r");
+        if(!fp)
+            die("fopen");
+        
+        char *line = NULL;
+        ssize_t line_cap = 0;
+        ssize_t len;
+
+        len = getline(&line,&line_cap,fp);
+        if(len != -1){
+            while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+                len --;
+            _micro.row.size = len;
+            _micro.row.chars = malloc(len+1);
+            memcpy(_micro.row.chars,line,len);
+            _micro.row.chars[len] = '\0';
+            _micro.num_rows = 1;
+        }
+        free(line);
+        fclose(fp);
     }
