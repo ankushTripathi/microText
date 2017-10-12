@@ -11,7 +11,7 @@
 
 /*  ***********    Defines    *********     */
     #define CTRL_KEY(k) (k&0x1f)
-
+    
     struct buff {
         char *b;
         int len;
@@ -49,6 +49,7 @@
         int screencols;
         int num_rows;
         erow *row;
+        char *filename;
         struct termios init_termios;
     };
     struct config _micro;
@@ -70,6 +71,8 @@
     void microScroll();
     void microUpdateRow(erow*);
     int convertxToRx(erow*,int);
+    void drawStatusBar(struct buff *);
+    char *strdup (const char *) ;
 
 
 /*  ***********    Main    *********     */
@@ -97,8 +100,10 @@
         _micro.col_off = 0;
         _micro.num_rows = 0;
         _micro.row = NULL;
+        _micro.filename = NULL;
         if(getWindowSize(&_micro.screenrows,&_micro.screencols)==-1)
             die("getWindowSize, initMicro");
+        _micro.screenrows -= 1;
     }
 
     void enableRawMode(){
@@ -305,7 +310,8 @@
         bAppend(&a, "\x1b[H", 3); 
 
         drawRows(&a);
-        
+        drawStatusBar(&a);
+
         char buf[32];
         snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (_micro.y - _micro.row_off)+1, (_micro.r_x - _micro.col_off)+1);
         bAppend(&a, buf, strlen(buf));
@@ -334,6 +340,26 @@
         }
     }
 
+    void drawStatusBar(struct buff *a){
+        bAppend(a,"\x1b[7m",4);
+        char status[80], rstatus[80];
+        int len = snprintf(status, sizeof(status), "%.20s - %d lines",_micro.filename ? _micro.filename : "[No Name]", _micro.num_rows);
+        int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d",
+        _micro.y + 1, _micro.num_rows);
+        if (len > _micro.screencols) len = _micro.screencols;
+        bAppend(a, status, len);
+        while(len < _micro.screencols){
+            if (_micro.screencols - len == rlen) {
+                bAppend(a, rstatus, rlen);
+                break;
+            } else {
+                bAppend(a, " ", 1);
+                len++;
+            }
+        }
+        bAppend(a,"\x1b[m",3);
+    }
+
     void drawRows(struct buff *a){
         for(int y=0;y<_micro.screenrows;y++){
             int file_row = y+_micro.row_off;
@@ -360,10 +386,15 @@
                 bAppend(a,&_micro.row[file_row].render[_micro.col_off],len);
             }
             bAppend(a, "\x1b[K", 3);
-            if (y < _micro.screenrows - 1) {
               bAppend(a, "\r\n", 2);
-            }
         }
+    }
+
+    char *strdup (const char *s) {
+        char *d = malloc (strlen (s) + 1);   // Space for length plus nul
+        if (d == NULL) return NULL;          // No memory
+        strcpy (d,s);                        // Copy the characters
+        return d;                            // Return the new string
     }
 
 /*  ***********    Row Operations    *********     */ 
@@ -416,6 +447,9 @@ void microAppendRow(char *s, size_t len){
 
 /*  ***********    File I/O Functions    *********     */   
     void microOpen(char *filename){
+        free(_micro.filename);
+        _micro.filename = strdup(filename);
+
         FILE *fp = fopen(filename,"r");
         if(!fp)
             die("fopen");
