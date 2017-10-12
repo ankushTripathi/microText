@@ -40,10 +40,12 @@
     struct config{
         int x;
         int y;
+        int row_off;
+        int col_off;
         int screenrows;
         int screencols;
         int num_rows;
-        erow row;
+        erow *row;
         struct termios init_termios;
     };
     struct config _micro;
@@ -61,6 +63,8 @@
     void bFree(struct buff*);
     void _microCursor(int);
     void microOpen(char *filename);
+    void microAppendRow(char*,size_t);
+    void microScroll();
 
 
 /*  ***********    Main    *********     */
@@ -83,7 +87,10 @@
     void initMicro(){
         _micro.x = 0;
         _micro.y = 0;
+        _micro.row_off = 0;
+        _micro.col_off = 0;
         _micro.num_rows = 0;
+        _micro.row = NULL;
         if(getWindowSize(&_micro.screenrows,&_micro.screencols)==-1)
             die("getWindowSize, initMicro");
     }
@@ -197,6 +204,7 @@
 /*  ***********    Input Functions    *********     */
 
     void _microCursor(int key){
+        erow *row = (_micro.y  >= _micro.num_rows) ? NULL : &_micro.row[_micro.y];
         switch(key){
             case ARROW_UP : 
             if(_micro.y !=0){
@@ -204,20 +212,31 @@
             }
                         break;
             case ARROW_DOWN : 
-            if(_micro.y != _micro.screenrows -1){
+            if(_micro.y < _micro.num_rows){
             _micro.y++;
             }
                         break;
             case ARROW_LEFT :
             if(_micro.x!=0){
                 _micro.x--;
-            } 
-                        break;
-            case ARROW_RIGHT : 
-            if(_micro.x != _micro.screencols -1){
-                _micro.x++;
+            } else if(_micro.y > 0){
+                _micro.y--;
+                _micro.x = _micro.row[_micro.y].size;
             }
                         break;
+            case ARROW_RIGHT : 
+            if(row && _micro.x < row->size){
+                _micro.x++;
+            }else if(row && _micro.x == row->size){
+                _micro.y++;
+                _micro.x = 0;
+            }
+                break;
+        }
+        row = (_micro.y >= _micro.num_rows) ? NULL : &_micro.row[_micro.y];
+        int row_len = row ? row->size : 0;
+        if(_micro.x > row_len){
+            _micro.x = row_len;
         }
     }
 
@@ -267,6 +286,7 @@
     }
 
     void _microRefreshScreen(){
+        microScroll();
         struct buff a = BUFF_INIT;
         bAppend(&a, "\x1b[?25l", 6);
         bAppend(&a, "\x1b[H", 3); 
@@ -274,17 +294,33 @@
         drawRows(&a);
         
         char buf[32];
-        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", _micro.y + 1, _micro.x + 1);
+        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (_micro.y - _micro.row_off)+1, (_micro.x - _micro.col_off)+1);
         bAppend(&a, buf, strlen(buf));
         bAppend(&a, "\x1b[?25h", 6);
         write(STDOUT_FILENO, a.b, a.len);
         bFree(&a);
     }
     
+    void microScroll(){
+        if(_micro.y < _micro.row_off){
+            _micro.row_off = _micro.y;
+        }
+        if(_micro.y >= _micro.row_off + _micro.screenrows){
+            _micro.row_off = _micro.y-_micro.screenrows+1;
+        }
+        if(_micro.x < _micro.col_off){
+            _micro.col_off = _micro.x;
+        }
+        if(_micro.x >= _micro.col_off + _micro.screencols){
+            _micro.col_off = _micro.x-_micro.screencols+1;
+        }
+    }
+
     void drawRows(struct buff *a){
         for(int y=0;y<_micro.screenrows;y++){
-            if(y >= _micro.num_rows){
-                if (y == _micro.screenrows / 3) {
+            int file_row = y+_micro.row_off;
+            if(file_row >= _micro.num_rows){
+                if (_micro.num_rows == 0 && y == _micro.screenrows / 3) {
                     char welcome[80];
                     int welcomelen = snprintf(welcome, sizeof(welcome),
                       "Micro editor -- version %s", MICRO_VERSION);
@@ -295,14 +331,15 @@
                       padding--;
                     }
                     while (padding--) bAppend(a, " ", 1);
-                    bAppend(a, welcome, welcomelen);
+                        bAppend(a, welcome, welcomelen);
                   } else {
-                    bAppend(a, "#", 1);
+                        bAppend(a, "#", 1);
                   }
             }else{
-                int len = _micro.row.size;
+                int len = _micro.row[file_row].size-_micro.col_off;
+                if(len < 0) len = 0;
                 if(len > _micro.screencols) len = _micro.screencols;
-                bAppend(a,_micro.row.chars,len);
+                bAppend(a,&_micro.row[file_row].chars[_micro.col_off],len);
             }
             bAppend(a, "\x1b[K", 3);
             if (y < _micro.screenrows - 1) {
@@ -311,6 +348,17 @@
         }
     }
 
+/*  ***********    Row Operations    *********     */ 
+void microAppendRow(char *s, size_t len){
+    _micro.row = realloc(_micro.row,sizeof(erow)*(_micro.num_rows + 1));
+    int i = _micro.num_rows;
+    _micro.row[i].size = len;
+    _micro.row[i].chars = malloc(len+1);
+    memcpy(_micro.row[i].chars,s,len);
+    _micro.row[i].chars[len] = '\0';
+    _micro.num_rows++;
+}
+
 /*  ***********    File I/O Functions    *********     */   
     void microOpen(char *filename){
         FILE *fp = fopen(filename,"r");
@@ -318,18 +366,13 @@
             die("fopen");
         
         char *line = NULL;
-        ssize_t line_cap = 0;
-        ssize_t len;
+        size_t line_cap = 0;
+        size_t len;
 
-        len = getline(&line,&line_cap,fp);
-        if(len != -1){
+        while((len = getline(&line,&line_cap,fp))!=-1){
             while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
                 len --;
-            _micro.row.size = len;
-            _micro.row.chars = malloc(len+1);
-            memcpy(_micro.row.chars,line,len);
-            _micro.row.chars[len] = '\0';
-            _micro.num_rows = 1;
+            microAppendRow(line,len);
         }
         free(line);
         fclose(fp);
