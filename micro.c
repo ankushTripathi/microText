@@ -18,7 +18,7 @@
     };
     #define BUFF_INIT {NULL, 0}
     #define MICRO_VERSION "0.0.1"
-
+    #define MICRO_TAB 8
     enum editor_keys  {
         ARROW_LEFT = 1000,
         ARROW_UP,
@@ -33,13 +33,16 @@
 
     typedef struct erow {
         int size;
+        int rsize;
         char *chars;
+        char *render;
     } erow;
 
 /*  ***********    Declarations    *********     */
     struct config{
         int x;
         int y;
+        int r_x;
         int row_off;
         int col_off;
         int screenrows;
@@ -65,6 +68,8 @@
     void microOpen(char *filename);
     void microAppendRow(char*,size_t);
     void microScroll();
+    void microUpdateRow(erow*);
+    int convertxToRx(erow*,int);
 
 
 /*  ***********    Main    *********     */
@@ -87,6 +92,7 @@
     void initMicro(){
         _micro.x = 0;
         _micro.y = 0;
+        _micro.r_x = 0;
         _micro.row_off = 0;
         _micro.col_off = 0;
         _micro.num_rows = 0;
@@ -251,6 +257,12 @@
             case PAGE_UP:
             case PAGE_DOWN:
               {
+                if (c == PAGE_UP) {
+                    _micro.y = _micro.row_off;
+                  } else if (c == PAGE_DOWN) {
+                    _micro.y = _micro.row_off + _micro.screenrows - 1;
+                    if (_micro.y > _micro.num_rows) _micro.y = _micro.num_rows;
+                }
                 int times = _micro.screenrows;
                 while (times--)
                   _microCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
@@ -260,8 +272,9 @@
                 _micro.x = 0;
                 break;
             case END_KEY:
-              _micro.x = _micro.screencols - 1;
-                break;  
+            if(_micro.y < _micro.num_rows)
+                _micro.x = _micro.row[_micro.y].size;
+            break;  
           case ARROW_UP:
           case ARROW_DOWN:
           case ARROW_LEFT:
@@ -294,7 +307,7 @@
         drawRows(&a);
         
         char buf[32];
-        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (_micro.y - _micro.row_off)+1, (_micro.x - _micro.col_off)+1);
+        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (_micro.y - _micro.row_off)+1, (_micro.r_x - _micro.col_off)+1);
         bAppend(&a, buf, strlen(buf));
         bAppend(&a, "\x1b[?25h", 6);
         write(STDOUT_FILENO, a.b, a.len);
@@ -302,17 +315,22 @@
     }
     
     void microScroll(){
+        _micro.r_x = 0;
+        if (_micro.y < _micro.num_rows) {
+            _micro.r_x = convertxToRx(&_micro.row[_micro.y], _micro.x);
+          }
+
         if(_micro.y < _micro.row_off){
             _micro.row_off = _micro.y;
         }
         if(_micro.y >= _micro.row_off + _micro.screenrows){
             _micro.row_off = _micro.y-_micro.screenrows+1;
         }
-        if(_micro.x < _micro.col_off){
-            _micro.col_off = _micro.x;
+        if(_micro.r_x < _micro.col_off){
+            _micro.col_off = _micro.r_x;
         }
-        if(_micro.x >= _micro.col_off + _micro.screencols){
-            _micro.col_off = _micro.x-_micro.screencols+1;
+        if(_micro.r_x >= _micro.col_off + _micro.screencols){
+            _micro.col_off = _micro.r_x-_micro.screencols+1;
         }
     }
 
@@ -336,10 +354,10 @@
                         bAppend(a, "#", 1);
                   }
             }else{
-                int len = _micro.row[file_row].size-_micro.col_off;
+                int len = _micro.row[file_row].rsize-_micro.col_off;
                 if(len < 0) len = 0;
                 if(len > _micro.screencols) len = _micro.screencols;
-                bAppend(a,&_micro.row[file_row].chars[_micro.col_off],len);
+                bAppend(a,&_micro.row[file_row].render[_micro.col_off],len);
             }
             bAppend(a, "\x1b[K", 3);
             if (y < _micro.screenrows - 1) {
@@ -349,13 +367,50 @@
     }
 
 /*  ***********    Row Operations    *********     */ 
+int convertxToRx(erow *row,int x){
+    int r_x = 0;
+    int j;
+    for (j = 0; j < x; j++) {
+        if (row->chars[j] == '\t')
+          r_x += (MICRO_TAB - 1) - (r_x % MICRO_TAB);
+        r_x++;
+      }
+      return r_x;
+}
+
+void microUpdateRow(erow *row) {
+    int tabs = 0;
+    int j;
+    for (j = 0; j < row->size; j++)
+      if (row->chars[j] == '\t') tabs++;
+    free(row->render);
+    row->render = malloc(row->size + tabs*(MICRO_TAB-1) + 1);
+    int idx = 0;
+    for (j = 0; j < row->size; j++) {
+        if (row->chars[j] == '\t') {
+            row->render[idx++] = ' ';
+            while (idx % MICRO_TAB != 0) row->render[idx++] = ' ';
+          } else {
+            row->render[idx++] = row->chars[j];
+          }
+    }
+    row->render[idx] = '\0';
+    row->rsize = idx;
+  }
+
 void microAppendRow(char *s, size_t len){
     _micro.row = realloc(_micro.row,sizeof(erow)*(_micro.num_rows + 1));
+    
     int i = _micro.num_rows;
     _micro.row[i].size = len;
     _micro.row[i].chars = malloc(len+1);
     memcpy(_micro.row[i].chars,s,len);
     _micro.row[i].chars[len] = '\0';
+    
+    _micro.row[i].rsize = 0;
+    _micro.row[i].render = NULL;
+    microUpdateRow(&_micro.row[i]);
+
     _micro.num_rows++;
 }
 
